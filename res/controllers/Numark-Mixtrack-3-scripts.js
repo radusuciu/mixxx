@@ -118,6 +118,8 @@ NumarkMixtrack3(); // Very important ! Initializes some reusable objects.
 
 // Array of Objects can be created
 NumarkMixtrack3.group = "[Master]";
+NumarkMixtrack3.numDecks = 4;
+NumarkMixtrack3.numSamplers = 8;
 NumarkMixtrack3.decknum = 0;
 NumarkMixtrack3.decks = [];
 NumarkMixtrack3.samplers = [];
@@ -130,53 +132,60 @@ var QUICK_PRESS = 1,
     DOUBLE_PRESS = 2,
     LONG_PRESS = 3;
 
-//LEDs constants
-var ledCategories = {
-    "master": 0,
-    "channel1": 1,
-    "channel2": 2,
-    "meters": 32
+// LEDs constants
+// Master: all are first byte (0x90 + 0)
+
+var masterLeds = {
+    firstByte: 0x90,
+    leds: { 'headphones': 0x0e, 'all': 0x75 }
 };
 
-var leds = {
-    // Master: all are first byte 0x90 ( = 0x90+ledcatecories.master )
-    "headphones1": 0x0e,
-    "headphones2": 0x0f,
-    "all": 0x75,
-    // Deck 1: first byte 0x91 ( = 0x90+ledcatecories.channel1 = 0x90+1 )
-    // Deck 2: first byte 0x92 ( = 0x90+ledcatecories.channel2 = 0x90+2 )
-    "jogWheelsInScratchMode": 0x06,
-    "loopin": 0x13,
-    "loopout": 0x14,
-    "reloop_exit": 0x15,
-    "loop_halve": 0x16,
-    "hotCue1": 0x1b,
-    "hotCue2": 0x1c,
-    "hotCue3": 0x1d,
-    "hotCue4": 0x1e,
-    "Cue": 0x03,
-    "sync": 0x02,
-    "play": 0x01,
-    "fx1": 0x07,
-    "fx2": 0x08,
-    "fx3": 0x09,
-    "tap": 0x0a,
-    "PADloop1": 0x17,
-    "PADloop2": 0x18,
-    "PADloop3": 0x19,
-    "PADloop4": 0x1A,
-    "PADsampler1": 0x20,
-    "PADsampler2": 0x21,
-    "PADsampler3": 0x22,
-    "PADsampler4": 0x23,
-    "PADsampler5": 0x20,
-    "PADsampler6": 0x21,
-    "PADsampler7": 0x22,
-    "PADsampler8": 0x23,
+// Meters: first byte 0xb0 (0x90 + 32)
+var metersLeds = {
+    firstByte: 0xb0,
+    leds: { 'meter': 0x02 },
+};
 
-    // Meters: first byte 0xb0 ( = 0x90+ledcatecories.meters )
-    "meter1": 0x02,
-    "meter2": 0x03
+// Deck 1: first byte 0x91 (0x90 + 1)
+// Deck 2: first byte 0x92 (0x90 + 2)
+var deckLeds = {
+    firstByteWithoutDeck: 0x90,
+    leds: {
+        'jogWheelsInScratchMode': 0x06,
+        'loopin': 0x13,
+        'loopout': 0x14,
+        'reloop_exit': 0x15,
+        'loop_halve': 0x16,
+        'hotCue1': 0x1b,
+        'hotCue2': 0x1c,
+        'hotCue3': 0x1d,
+        'hotCue4': 0x1e,
+        'Cue': 0x03,
+        'sync': 0x02,
+        'play': 0x01,
+        'fx1': 0x07,
+        'fx2': 0x08,
+        'fx3': 0x09,
+        'tap': 0x0a,
+        'PADloop1': 0x17,
+        'PADloop2': 0x18,
+        'PADloop3': 0x19,
+        'PADloop4': 0x1A
+    }
+};
+
+var samplerLeds = {
+    firstByteWithoutDeck: 0x90,
+    leds: {
+        'PADsampler1': 0x20,
+        'PADsampler2': 0x21,
+        'PADsampler3': 0x22,
+        'PADsampler4': 0x23,
+        'PADsampler5': 0x20,
+        'PADsampler6': 0x21,
+        'PADsampler7': 0x22,
+        'PADsampler8': 0x23
+    }
 };
 
 var PADcolors = {
@@ -748,7 +757,7 @@ var Jogger = function(group, decknum) {
 // ******************************************************************
 NumarkMixtrack3.deck = function(decknum) {
     this.decknum = decknum;
-    this.group = "[Channel" + decknum + "]";
+    this.group = '[Channel' + decknum + ']';
     this.loaded = false;
     this.jogWheelsInScratchMode = false;
     this.PADMode = false; //false = not pressed; true = pressed
@@ -760,130 +769,215 @@ NumarkMixtrack3.deck = function(decknum) {
     this.scratchTimer = 0;
     this.seekingfast = false;
     this.iCutStatus = false;
-    this.LEDs = [];
+    this.LEDs = {};
     this.TapDown = false;
-    this.InstantFX = [];
     this.Jog = new Jogger(this.group, this.decknum);
     this.duration = 0;
 
-    engine.setValue('[EffectRack1_EffectUnit' + decknum + ']', 'show_focus', true);
+    this.effectUnit = new NumarkMixtrack3.EffectUnit(this);
+
+    this.init();
 };
 
+NumarkMixtrack3.deck.prototype.init = function() {
+    this.initLeds();
+    
+    // set up button objects
+    this.LoadButtonControl = new LongShortBtn(NumarkMixtrack3.OnLoadButton);
+    this.SyncButtonControl = new LongShortDoubleBtn(NumarkMixtrack3.OnSyncButton);
+    this.PADLoopButtonHold = new LongShortBtn(NumarkMixtrack3.onPADLoopButtonHold);
 
-NumarkMixtrack3.deck.prototype.TrackIsLoaded = function() {
-    return engine.getValue(this.group, "track_loaded");
+    // soft take-overs
+    engine.softTakeover(this.group, 'rate', true);
+    engine.softTakeover(this.group, 'volume', true);
+
+    // set volume to zero (initial load only)
+    engine.setParameter(this.group, 'volume', 0);
+
+    this.connect();
 };
 
-NumarkMixtrack3.deck.prototype.getFocusedEffect = function() {
-    var effectGroup = "[EffectRack1_EffectUnit" + this.decknum + "]";
-    return engine.getValue(effectGroup, "focused_effect");
+NumarkMixtrack3.deck.prototype.initLeds = function() {
+    // first master and meter leds
+    this.LEDs.headphones = new LED(masterLeds.firstByte, masterLeds.leds.headphones - 1);
+    this.LEDs.meter = new LED(meterLeds.firstByte, meterLeds.leds.meters - 1);
+
+    // and the rest of the leds
+    for (var led in deckLeds.leds) {
+        if (deckLeds.hasOwnProperty(led)) {
+            // only have two physical sets of leds for our 4 virtual decks
+            var control = deckLeds.firstByteWithoutDeck + ((this.deckNum + 1) % 2 + 1);
+            this.LEDs[led] = new LED(control, deckLeds.leds[led]);
+            this.LEDs[led].onOff(OFF);
+        }
+    }
 };
 
-NumarkMixtrack3.deck.prototype.focusEffect = function(effectNum) {
-    var effectGroup = "[EffectRack1_EffectUnit" + this.decknum + "]";
-    engine.setValue(effectGroup, "focused_effect", effectNum);
+NumarkMixtrack3.deck.prototype.connect = function() {
+    this.shiftKey = false;
+
+    for (var control in NumarkMixtrack3.controlsToFunctions) {
+        if (NumarkMixtrack3.controlsToFunctions.hasOwnProperty(control)) {
+            engine.connectControl(group, control, NumarkMixtrack3.controlsToFunctions[control]);
+            engine.trigger(group, control);
+        }
+    }
+
+    this.effectUnit.connect();
+    this.effectUnit.enableInstantFx();
+
+    for (var i = 1; i <= 4; i++) {
+        this.LEDs['PADloop' + i].onOff(PADcolors.yellow);
+    }
 };
 
-NumarkMixtrack3.deck.prototype.focusNextEffect = function() {
+NumarkMixtrack3.deck.prototype.disconnect = function() {
+    this.shiftKey = false;
+
+    for (var led in this.LEDs) {
+        if (led.hasOwnProperty('onOff')) {
+            led.onOff(OFF);
+        }
+    }
+
+    for (var control in NumarkMixtrack3.controlsToFunctions) {
+        if (NumarkMixtrack3.controlsToFunctions.hasOwnProperty(control)) {
+            engine.connectControl(this.group, control, NumarkMixtrack3.controlsToFunctions[control], true);
+        }
+    }
+};
+
+NumarkMixtrack3.deck.prototype.trackIsLoaded = function() {
+    return engine.getValue(this.group, 'track_loaded');
+};
+
+// ******************************************************************
+// EffectUnit and Effect
+// ******************************************************************
+NumarkMixtrack3.EffectUnit = function(deck) {
+    this.decknum = deck.decknum;
+    this.group = '[EffectRack1_EffectUnit' + decknum + ']';
+    this.effects = [];
+
+    engine.setValue(this.effectUnitGroup, 'show_focus', true);
+
     var effectsPerUnit = 3;
-    var nextEffect = (this.getFocusedEffect() + 1) % (effectsPerUnit + 1);
-    this.focusEffect(nextEffect);
+
+    for (var i = 0; i < effectsPerUnit; i++) {
+        this.effects[i] = new NumarkMixtrack3.Effect(decknum, i + 1);
+    }
+};
+
+NumarkMixtrack3.EffectUnit.prototype.connect = function() {
+    for (var i = 0, n = this.effects.length; i < n; i++) {
+        this.effect[i].connect();
+    }
+};
+
+NumarkMixtrack3.EffectUnit.prototype.super = function(value) {
+    engine.setValue(this.group, 'super1', value);
+};
+
+NumarkMixtrack3.EffectUnit.prototype.getFocusedEffect = function() {
+    return this.effects[engine.getValue(this.group, 'focused_effect') - 1];
+};
+
+NumarkMixtrack3.EffectUnit.prototype.focusEffect = function(effectNum) {
+    engine.setValue(this.group, 'focused_effect', effectNum);
+};
+
+NumarkMixtrack3.EffectUnit.prototype.getInstantEffects = function() {
+    var instantFx = [];
+
+    for (var i = 0, n = this.effects.length; i < n; i++) {
+        if (this.effects[i].instant) {
+            instantFx.push(this.effects[i]);
+        }
+    }
+
+    return instantFx;
+};
+
+NumarkMixtrack3.EffectUnit.prototype.enableInstantFx = function() {
+    var instantFx = this.getInstantEffects();
+
+    for (var i = 0, n = instantFx.length; i < n; i++) {
+        instantFx[i].enable();
+        this.deck.LEDs["fx" + instantFx[i].effectGroup].flashOn(250, ON, 250);
+    }
+};
+
+NumarkMixtrack3.EffectUnit.prototype.disableInstantFx = function() {
+    var instantFx = this.getInstantEffects();
+
+    for (var i = 0, n = instantFx.length; i < n; i++) {
+        instantFx[i].disable();
+    }
+};
+
+NumarkMixtrack3.Effect = function(effectUnit, effectNum) {
+    this.effectUnit = effectUnit;
+    this.effectNum = effectNum;
+    this.group = '[EffectRack1_EffectUnit' + effectUnit + '_Effect' + effectNum + ']';
+    this.instant = false;
+};
+
+NumarkMixtrack3.Effect.prototype.connect = function() {
+    engine.connectControl(this.group, 'enabled', 'NumarkMixtrack3.OnEffectEnabled');
+    engine.trigger(this.group, 'enabled');
+};
+
+NumarkMixtrack3.Effect.prototype.enable = function() {
+    engine.setValue(this.group, 'enabled', true);
+    return this;
+};
+
+NumarkMixtrack3.Effect.prototype.disable = function() {
+    engine.setValue(this.group, 'enabled', false);
+    return this;
+};
+
+NumarkMixtrack3.EffectUnit.prototype.meta = function(value) {
+    engine.setValue(this.group, 'meta', value);
+    return this;
 };
 
 // ******************************************************************
 // Samplers - object
 // ******************************************************************
-
 NumarkMixtrack3.sampler = function(decknum) {
     this.decknum = decknum;
-    this.group = "[Sampler" + decknum + "]";
+    this.group = '[Sampler' + decknum + ']';
     this.loaded = false;
     this.PitchFaderHigh = 0;
     this.lastfadervalue = 0;
-    this.LEDs = [];
+
+    // sampler LEDs, first 4 are 0x91, next 4 are 0x92
+    this.led = new LED(
+        samplerLeds.firstByteWithoutDeck + Math.round(decknum / 9),
+        samplerLeds.leds['PADsampler' + decknum]
+    );
+
+    this.led.onOff(PADcolors.black);
+
+    // init button objects
+    this.PADSampleButtonHold = new LongShortBtn(NumarkMixtrack3.onPADSampleButtonHold);
+
+    // connect controls
+    engine.connectControl(this.group, 'play', 'NumarkMixtrack3.OnSamplePlayStop');
+
+    // soft take-overs
+    engine.softTakeover(this.group, 'pregain', true);
 };
 
 // =====================================================================
 // Initialization of the mapping
 // =====================================================================
-
-// initialize 4 decks
-for (var i = 1; i <= 4; i++) {
-    NumarkMixtrack3.decks['D' + i] = new NumarkMixtrack3.deck(i);
-}
-
-//initialize 8 samplers
-for (var i = 1; i <= 8; i++) {
-    NumarkMixtrack3.samplers['S' + i] = new NumarkMixtrack3.sampler(i);
-}
-
-NumarkMixtrack3.initLEDsObjects = function() {
-    var decks = NumarkMixtrack3.decks;
-
-    NumarkMixtrack3.AllLeds = new LED(0x90 + ledCategories.master, leds.all);
-
-    // sampler LEDs, first 4 are 0x91, next 4 are 0x92
-    for (var i = 1; i <= 8; i++) {
-        NumarkMixtrack3.samplers["S" + i].LEDs["PADsampler" + i] = new LED(
-            0x91 + Math.round(i / 9), leds["PADsampler" + i]
-        );
-    }
-
-    // all other leds for all decks
-    for (var i = 1; i <= 4; i++) {
-        // only have two physical sets of buttons for our 4 virtual decks
-        var j = (i + 1) % 2 + 1;
-
-        decks["D" + i].LEDs.headphones = new LED(0x90 + ledCategories.master, leds.headphones1 - 1 + j);
-        decks["D" + i].LEDs.jogWheelsInScratchMode = new LED(0x90 + j, leds.jogWheelsInScratchMode);
-        decks["D" + i].LEDs.loopin = new LED(0x90 + j, leds.loopin);
-        decks["D" + i].LEDs.loopout = new LED(0x90 + j, leds.loopout);
-        decks["D" + i].LEDs.reloop_exit = new LED(0x90 + j, leds.reloop_exit);
-        decks["D" + i].LEDs.loop_halve = new LED(0x90 + j, leds.loop_halve);
-        decks["D" + i].LEDs.hotCue1 = new LED(0x90 + j, leds.hotCue1);
-        decks["D" + i].LEDs.hotCue2 = new LED(0x90 + j, leds.hotCue2);
-        decks["D" + i].LEDs.hotCue3 = new LED(0x90 + j, leds.hotCue3);
-        decks["D" + i].LEDs.hotCue4 = new LED(0x90 + j, leds.hotCue4);
-        decks["D" + i].LEDs.Cue = new LED(0x90 + j, leds.Cue);
-        decks["D" + i].LEDs.sync = new LED(0x90 + j, leds.sync);
-        decks["D" + i].LEDs.play = new LED(0x90 + j, leds.play);
-        decks["D" + i].LEDs.fx1 = new LED(0x90 + j, leds.fx1);
-        decks["D" + i].LEDs.fx2 = new LED(0x90 + j, leds.fx2);
-        decks["D" + i].LEDs.fx3 = new LED(0x90 + j, leds.fx3);
-        decks["D" + i].LEDs.tap = new LED(0x90 + j, leds.tap);
-        decks["D" + i].LEDs.PADloop1 = new LED(0x90 + j, leds.PADloop1);
-        decks["D" + i].LEDs.PADloop2 = new LED(0x90 + j, leds.PADloop2);
-        decks["D" + i].LEDs.PADloop3 = new LED(0x90 + j, leds.PADloop3);
-        decks["D" + i].LEDs.PADloop4 = new LED(0x90 + j, leds.PADloop4);
-        decks["D" + i].LEDs.meter = new LED(0x90 + ledCategories.meters, leds.meter1 - 1 + j);
-    }
-};
-
-NumarkMixtrack3.initButtonsObjects = function() {
-    var decks = NumarkMixtrack3.decks;
-
-    for (var i = 1; i <= 4; i++) {
-        decks["D" + i].LoadButtonControl = new LongShortBtn(NumarkMixtrack3.OnLoadButton);
-        decks["D" + i].SyncButtonControl = new LongShortDoubleBtn(NumarkMixtrack3.OnSyncButton);
-        decks["D" + i].PADLoopButtonHold = new LongShortBtn(NumarkMixtrack3.onPADLoopButtonHold);
-    }
-
-    for (var i = 1; i <= 8; i++) {
-        NumarkMixtrack3.samplers["S" + i].PADSampleButtonHold = new LongShortBtn(
-            NumarkMixtrack3.onPADSampleButtonHold
-        );
-    }
-};
-
 NumarkMixtrack3.init = function(id, debug) {
     // Set up the controller to manipulate decks 1 & 2 when this script is loaded 
 
     print("********* Initialisation process engaged *****************");
     print("              Mapping initialization");
-    print("");
-
-    print("==========================================================");
-    print("               Initialize variables");
     print("");
 
     NumarkMixtrack3.id = id; // Store the ID of this device for later use
@@ -893,36 +987,6 @@ NumarkMixtrack3.init = function(id, debug) {
         '[Channel2]': '[Channel2]',
         '[Channel3]': '[Channel3]',
         '[Channel4]': '[Channel4]'
-    };
-
-    NumarkMixtrack3.fxControls = { // used to determine FX Button
-        '[EffectRack1_EffectUnit1_Effect1]': 1,
-        '[EffectRack1_EffectUnit1_Effect2]': 2,
-        '[EffectRack1_EffectUnit1_Effect3]': 3,
-        '[EffectRack1_EffectUnit2_Effect1]': 1,
-        '[EffectRack1_EffectUnit2_Effect2]': 2,
-        '[EffectRack1_EffectUnit2_Effect3]': 3,
-        '[EffectRack1_EffectUnit3_Effect1]': 1,
-        '[EffectRack1_EffectUnit3_Effect2]': 2,
-        '[EffectRack1_EffectUnit3_Effect3]': 3,
-        '[EffectRack1_EffectUnit4_Effect1]': 1,
-        '[EffectRack1_EffectUnit4_Effect2]': 2,
-        '[EffectRack1_EffectUnit4_Effect3]': 3
-    };
-
-    NumarkMixtrack3.fxGroups = { //Used to determine deck
-        '[EffectRack1_EffectUnit1_Effect1]': 1,
-        '[EffectRack1_EffectUnit1_Effect2]': 1,
-        '[EffectRack1_EffectUnit1_Effect3]': 1,
-        '[EffectRack1_EffectUnit2_Effect1]': 2,
-        '[EffectRack1_EffectUnit2_Effect2]': 2,
-        '[EffectRack1_EffectUnit2_Effect3]': 2,
-        '[EffectRack1_EffectUnit3_Effect1]': 3,
-        '[EffectRack1_EffectUnit3_Effect2]': 3,
-        '[EffectRack1_EffectUnit3_Effect3]': 3,
-        '[EffectRack1_EffectUnit4_Effect1]': 4,
-        '[EffectRack1_EffectUnit4_Effect2]': 4,
-        '[EffectRack1_EffectUnit4_Effect3]': 4
     };
 
     NumarkMixtrack3.Autoloop = {
@@ -936,128 +1000,6 @@ NumarkMixtrack3.init = function(id, debug) {
         'beatloop_1_enabled': 4
     };
 
-    print("==========================================================");
-    print("                  Initialize LEDs");
-    print("");
-
-    // Create LEDs Objects
-    NumarkMixtrack3.initLEDsObjects();
-
-    // Turn ON all the lights: the only way PADMode Leds light up 
-    NumarkMixtrack3.AllLeds.onOff(ON);
-
-    // Initialise some others (PAD LEDs)
-    for (var i = 1; i <= 8; i++) {
-        NumarkMixtrack3.samplers["S" + i].LEDs["PADsampler" + i].onOff(PADcolors.black);
-    }
-
-    for (var i = 1; i <= 4; i++) {
-        for (var led in NumarkMixtrack3.decks["D" + i].LEDs) {
-            if (led.hasOwnProperty("onOff")) {
-                led.onOff(OFF);
-            }
-        }
-
-        for (var j = 1; j <= 4; j++) {
-            NumarkMixtrack3.decks["D" + i].LEDs["PADloop" + j].onOff(PADcolors.black);
-        }
-        print("   LEDs state set for deck " + "D" + i);
-    }
-
-    print("==========================================================");
-    print("                 Initialize Buttons");
-    print("");
-    NumarkMixtrack3.initButtonsObjects();
-
-    print("==========================================================");
-    print("                Init Soft Takeovers");
-    print("");
-
-    // Set soft-takeover for all Sampler volumes
-    for (var i = engine.getValue("[Master]", "num_samplers"); i >= 1; i--) {
-        engine.softTakeover("[Sampler" + i + "]", "pregain", true);
-    }
-
-    for (var i = engine.getValue("[Master]", "num_decks"); i >= 1; i--) {
-        engine.softTakeover("[Channel" + i + "]", "rate", true); // Enable soft-takeover for Pitch slider
-        engine.softTakeover("[Channel" + i + "]", "volume", true); // Enable soft-takeover for volume
-        engine.setParameter("[Channel" + i + "]", "volume", 0); // Set volume to zero for each deck (initial load only)
-    }
-
-    for (var i = 1; i <= 8; i++) {
-        engine.connectControl("[Sampler" + i + "]", "play", "NumarkMixtrack3.OnSamplePlayStop");
-    }
-
-    engine.connectControl("[BeatJump]", "next", "NumarkMixtrack3.OnBeatJump");
-    engine.connectControl("[BeatJump]", "prev", "NumarkMixtrack3.OnBeatJump");
-    engine.connectControl("[LoopMove]", "next", "NumarkMixtrack3.OnLoopMove");
-    engine.connectControl("[LoopMove]", "prev", "NumarkMixtrack3.OnLoopMove");
-
-    NumarkMixtrack3.initDeck('[Channel1]', false); //Initial load, "remove" is set to false
-    NumarkMixtrack3.initDeck('[Channel2]', false);
-
-    print("*********      Controller is ready      *******************");
-    print("********* End of Initialisation process *******************");
-};
-
-NumarkMixtrack3.initDeck = function(group, remove) {
-    var disconnectDeck = parseInt(NumarkMixtrack3.channelRegEx.exec(group)[1]);
-    var connectedLED = disconnectDeck;
-
-    if (disconnectDeck <= 2) {
-        disconnectDeck += 2;
-    } else {
-        disconnectDeck -= 2;
-    }
-
-    print("==========================================================");
-    print("                initDeck " + group);
-    print("");
-
-    // If "remove" = true, disconnect old deck's Mixxx controls from LEDs.
-    // We always connect new deck's Mixxx controls to LEDs
-    NumarkMixtrack3.connectDeckControls(group, remove); 
-
-    // Toggle LED that indicates which deck is being controlled
-    if (connectedLED <= 2) {
-        NumarkMixtrack3.decks["D" + disconnectDeck].LEDs.tap.onOff((OFF));
-    } else {
-        NumarkMixtrack3.decks["D" + connectedLED].LEDs.tap.onOff((ON));
-    }
-};
-
-NumarkMixtrack3.connectDeckControls = function(group, remove) {
-    // If the 'remove' parameter is not passed to this function, set remove = false
-    remove = remove || false;
-    var onDeckNum = parseInt(NumarkMixtrack3.channelRegEx.exec(group)[1]); 
-    var offDeckNum = (onDeckNum + 1) % 4 + 1;
-    var onDeck = NumarkMixtrack3.decks["D" + onDeckNum];
-    var offDeck = NumarkMixtrack3.decks["D" + offDeckNum];
-
-    if (remove) {
-        print("==========================================================");
-        print("           Disconnect controls from deck " + offDeckNum);
-        print("");
-
-        // make sure that the shift is no longer active on either deck to prevent confusion
-        offDeck.shiftKey = false;
-        onDeck.shiftKey = false; 
-
-        for (var led in offDeck.LEDs) {
-            if (led.hasOwnProperty('onOff')) {
-                led.onOff(OFF);
-            }
-        }
-
-        for (var i = 1; i <= 4; i++) {
-            onDeck.LEDs["PADloop" + i].onOff(PADcolors.yellow);
-        }
-    } 
-
-    print("==========================================================");
-    print("         Connect controls and triggers deck " + onDeckNum);
-    print("");
-    
     var controlsToFunctions = {
         'hotcue_1_enabled': 'NumarkMixtrack3.OnHotcueChange',
         'hotcue_2_enabled': 'NumarkMixtrack3.OnHotcueChange',
@@ -1089,48 +1031,47 @@ NumarkMixtrack3.connectDeckControls = function(group, remove) {
         controlsToFunctions['loop_move_' + jumpSize[i] + '_backward'] = 'NumarkMixtrack3.OnLoopMoveX';
     }
 
-    engine.connectControl("[EffectRack1_EffectUnit" + onDeckNum + "_Effect1]", "enabled",
-        "NumarkMixtrack3.OnEffectEnabled");
-    engine.connectControl("[EffectRack1_EffectUnit" + onDeckNum + "_Effect2]", "enabled",
-        "NumarkMixtrack3.OnEffectEnabled");
-    engine.connectControl("[EffectRack1_EffectUnit" + onDeckNum + "_Effect3]", "enabled",
-        "NumarkMixtrack3.OnEffectEnabled");
+    NumarkMixtrack3.controlsToFunctions = controlsToFunctions;
 
-    engine.trigger("[EffectRack1_EffectUnit" + onDeckNum + "_Effect1]", "enabled");
-    engine.trigger("[EffectRack1_EffectUnit" + onDeckNum + "_Effect2]", "enabled");
-    engine.trigger("[EffectRack1_EffectUnit" + onDeckNum + "_Effect3]", "enabled");
+    // Turn ON all the lights: the only way PADMode Leds light up 
+    NumarkMixtrack3.AllLeds = new LED(masterLeds.firstByte, masterLeds.leds.all);
+    NumarkMixtrack3.AllLeds.onOff(ON);
 
-
-    // Set InstantFX LEDs to flash if required
-    var arrayLength = onDeck.InstantFX.length;
-
-    for (var i = 0; i < arrayLength; i++) {
-        var ButtonNum = onDeck.InstantFX[i];
-        onDeck.LEDs["fx" + ButtonNum].flashOn(250, ON, 250);
+    // initialize decks
+    for (var i = 1; i <= NumarkMixtrack3.numDecks; i++) {
+        NumarkMixtrack3.decks['D' + i] = new NumarkMixtrack3.deck(i);
     }
 
-    for (var control in controlsToFunctions) {
-        if (controlsToFunctions.hasOwnProperty(control)) {
-            if (remove) {
-                engine.connectControl(offDeck.group, control, controlsToFunctions[control], true);
-            }
-            engine.connectControl(group, control, controlsToFunctions[control]);
-            engine.trigger(group, control);
-        }
+    // initialize samplers
+    for (var i = 1; i <= NumarkMixtrack3.numSamplers; i++) {
+        NumarkMixtrack3.samplers['S' + i] = new NumarkMixtrack3.sampler(i);
     }
 
-    if (!remove) { 
-        for (var i = 1; i <= 4; i++) {
-            engine.setValue("[EffectRack1_EffectUnit" + i + "_Effect1]", "enabled", false);
-            engine.setValue("[EffectRack1_EffectUnit" + i + "_Effect2]", "enabled", false);
-            engine.setValue("[EffectRack1_EffectUnit" + i + "_Effect3]", "enabled", false);
-        }
+    engine.connectControl('[BeatJump]', 'next', 'NumarkMixtrack3.OnBeatJump');
+    engine.connectControl('[BeatJump]', 'prev', 'NumarkMixtrack3.OnBeatJump');
+    engine.connectControl('[LoopMove]', 'next', 'NumarkMixtrack3.OnLoopMove');
+    engine.connectControl('[LoopMove]', 'prev', 'NumarkMixtrack3.OnLoopMove');
+
+    print("*********      Controller is ready      *******************");
+    print("********* End of Initialisation process *******************");
+};
+
+NumarkMixtrack3.swapDecks = function(currentDeck) {
+    // toggle decks 1 -> 3, 2 -> 4 and vice versa
+    var newDeckNum = (currentDeck.decknum + 1) % 4 + 1;
+    var newDeck = NumarkMixtrack3.decks['D' + newDeckNum];
+
+    // update deck lookup table
+    NumarkMixtrack3.deckGroup[group] = '[Channel' + newDeckNum + ']';
+
+    currentDeck.disconnect();
+    newDeck.connect();
+
+    if (newDeckNum > 2) {
+        newDeck.LEDs.tap.onOff(ON);
+    } else {
+        oldDeck.LEDs.tap.onOff(OFF);
     }
-    
-    print("");
-    print("               Initialisation completed");
-    print("==========================================================");
-    print("");
 };
 
 NumarkMixtrack3.shutdown = function() {
@@ -1165,7 +1106,7 @@ NumarkMixtrack3.PlayButton = function(channel, control, value, status, group) {
     if (value === DOWN) {
         if (!deck.shiftKey) {
             // play/pause
-            if (!deck.TrackIsLoaded()) {
+            if (!deck.trackIsLoaded()) {
                 // if a track is not loaded, load the selected track (if any) and play
                 engine.setValue(deck.group, "LoadSelectedTrackAndPlay", true);
             } else {
@@ -1298,7 +1239,7 @@ NumarkMixtrack3.PadModeButton = function(channel, control, value, status, group)
         }
 
         //Sampler
-        for (var i = 1; i <= 8; i++) {
+        for (var i = 1; i <= NumarkMixtrack3.numSamplers; i++) {
             engine.trigger("[Sampler" + i + "]", "play");
         }
     }
@@ -1330,7 +1271,7 @@ NumarkMixtrack3.LoadButton = function(channel, control, value, status, group) {
             deck.faderstart = true;
             deck.LEDs["headphones"].flashOn(250, ON, 250);
 
-            if (!deck.TrackIsLoaded()) {
+            if (!deck.trackIsLoaded()) {
                 engine.setValue(deck.group, 'LoadSelectedTrack', true);
             }
         }
@@ -1771,71 +1712,59 @@ NumarkMixtrack3.OnPADLoopButtonChange = function(value, group, control) {
 
 NumarkMixtrack3.StripTouchEffect = function(channel, control, value, status, group) {
     var deck = NumarkMixtrack3.deckFromGroup(group);
-    var focusedEffect = deck.getFocusedEffect();
+    var focusedEffect = deck.effecUnit.getFocusedEffect();
+    var instantFx = deck.effectUnit.getInstantEffects();
 
     if (deck.shiftKey) {
         engine.setValue(deck.group, "playposition", value / 127);
     } else {
-        if (deck.InstantFX.length) {
-            for (var i = 0; i < deck.InstantFX.length; i++) {
-                var fxGroup = "[EffectRack1_EffectUnit" + deck.decknum + "_Effect" + deck.InstantFX[i] + "]";
-                engine.setValue(fxGroup, "enabled", true);
-                engine.setValue(fxGroup, "meta", value / 127);
+        if (instantFx.length) {
+            for (var i = 0; i < instantFx.length; i++) {
+                instantFx[i].enable().meta(value / 127);
             }
         } else if (focusedEffect) {
-            var focusedGroup = "[EffectRack1_EffectUnit" + deck.decknum + "_Effect" + focusedEffect + "]";
-            engine.setValue(focusedGroup, "meta", value / 127);
+            focusedEffect.meta(value / 127);
         } else {
-            engine.setValue("[EffectRack1_EffectUnit" + deck.decknum + "]", "super1", value / 127);
+            deck.effectUnit.super(value / 127);
+            
         }
     }
 };
 
 NumarkMixtrack3.InstantFXOff = function(channel, control, value, status, group) {
     var deck = NumarkMixtrack3.deckFromGroup(group);
-
-    for (var i = 0, n = deck.InstantFX.length; i < n; i++) {
-        var buttonNum = deck.InstantFX[i];
-        engine.setValue("[EffectRack1_EffectUnit" + deck.decknum + "_Effect" + buttonNum + "]", "enabled", false);
-    }
+    deck.effectUnit.disableInstantFx();
 };
 
 NumarkMixtrack3.FXButton = function(channel, control, value, status, group) {
     var deck = NumarkMixtrack3.deckFromGroup(group);
-    var decknum = deck.decknum;
-    var effectNum = control - leds.fx1 + 1;
-    var effectGroup = "[EffectRack1_EffectUnit" + decknum + "_Effect" + effectNum + "]";
+    var effectNum = control - leds.fx1;
+    var effectGroup = deck.effectUnit.effect[effectNum].group;
+    var effect = deck.effectUnit.effects[effectNum];
 
     if (deck.PADMode && value === DOWN) {
-        if (deck.InstantFX.indexOf(effectNum) > -1) {
-            // remove effect from InstantFX and set LED to reflect whether or not effect is enabled
-            var index = deck.InstantFX.indexOf(effectNum);
-            deck.InstantFX.splice(index, 1);
-            deck.LEDs["fx" + effectNum].onOff(engine.getValue(effectGroup, "enabled") ? ON : OFF);
+        if (effect.instant) {
+            // disable instant mode for effect and set LED to reflect whether or not effect is enabled
+            effect.instant = false;
+            deck.LEDs['fx' + effectNum].onOff(engine.getValue(effectGroup, 'enabled') ? ON : OFF);
         } else {
-            // add new effect to InstantFX
-            deck.InstantFX.push(effectNum);
-
-            // get all LEDs to flash in sync
-            for (var i = 0, n = deck.InstantFX.length; i < n; i++) {
-                effectNum = deck.InstantFX[i];
-                deck.LEDs["fx" + effectNum].flashOn(250, ON, 250);
-            }
+            // enabled instant mode for effect and make sure all LEDs are flashing in sync
+            effect.instant = true;
+            deck.effectUnit.enableInstantFx();
         }
     } else if (deck.shiftKey && value === DOWN) {
         // load next effect and make sure the unit is enabled
-        engine.setValue(effectGroup, "next_effect", true);
-        engine.setValue("[EffectRack1_EffectUnit" + decknum + "]", "group_[Channel" + decknum + "]_enable", true);
+        engine.setValue(effectGroup, 'next_effect', true);
     } else if (deck.TapDown && value === DOWN) {
-        if (deck.getFocusedEffect() === effectNum) {
-            deck.focusEffect(0);
+        if (deck.effectUnit.getFocusedEffect() === effect) {
+            deck.effectUnit.focusEffect(0);
         } else {
-            deck.focusEffect(effectNum);
+            deck.effectUnit.focusEffect(effectNum);
         }
     } else if (value === DOWN) {
         // toggle effect if InstantFX is not active
-        if (deck.InstantFX.indexOf(effectNum) === -1) {
-            script.toggleControl(effectGroup, "enabled");
+        if (!effect.instant) {
+            script.toggleControl(effect.group, 'enabled');
         }
     }
 
@@ -1850,11 +1779,12 @@ NumarkMixtrack3.FXButton = function(channel, control, value, status, group) {
 };
 
 NumarkMixtrack3.OnEffectEnabled = function(value, group, control) {
-    var index = NumarkMixtrack3.fxControls[group];
-    var decknum = NumarkMixtrack3.fxGroups[group];
-    var deck = NumarkMixtrack3.decks["D" + decknum];
+    var matches = group.match(/\d/g);
+    var index = matches[2];
+    var deck = NumarkMixtrack3.decks["D" + matches[1]];
+    var effect = deck.effectUnit.effects[index];
 
-    if (deck.InstantFX.indexOf(index) === -1) {
+    if (!effect.instant) {
         var new_value = engine.getValue(group, control);
         deck.LEDs["fx" + index].onOff(new_value ? ON : OFF);
     }
@@ -1927,14 +1857,14 @@ NumarkMixtrack3.BeatKnob = function(channel, control, value, status, group) {
 
     // direct interaction with knob, without any button combination
     if (!deck.PADMode && !deck.shiftKey) {
-        var mixValue = engine.getParameter("[EffectRack1_EffectUnit" + deck.decknum + "]", "mix");
+        var mixValue = engine.getParameter(deck.effectUnitGroup, "mix");
         var increment = 1 / 20;
 
         if (!increase) {
             increment = -increment;
         }
 
-        engine.setParameter("[EffectRack1_EffectUnit" + deck.decknum + "]", "mix", mixValue + increment);
+        engine.setParameter(deck.effectUnitGroup, "mix", mixValue + increment);
     }
 
     if (deck.PADMode) {
@@ -1991,9 +1921,7 @@ NumarkMixtrack3.bpmTap = function(channel, control, value, status, group) {
         deck.TapDown = true; //to use TAP button as a "shift" key (e.g. InstantFX)
 
         if (deck.shiftKey) {
-            var newDeckNum = (deck.decknum + 1) % 4 + 1; // toggle decks 1 -> 3, 2 -> 4 and vice versa
-            NumarkMixtrack3.deckGroup[group] = '[Channel' + newDeckNum + ']';
-            NumarkMixtrack3.initDeck(NumarkMixtrack3.deckGroup[group], true);
+            NumarkMixtrack3.swapDecks(deck);
         } else {
             engine.setValue(deck.group, "bpm_tap", true);
             engine.setValue(deck.group, "bpm_tap", false);
@@ -2004,16 +1932,14 @@ NumarkMixtrack3.bpmTap = function(channel, control, value, status, group) {
 NumarkMixtrack3.EQKnob = function(channel, control, value, status, group) {
     var deck = NumarkMixtrack3.deckFromGroup(group);
     var decknum = deck.decknum;
-    var focusedEffect = deck.getFocusedEffect();
+    var focusedEffect = deck.effectUnit.getFocusedEffect();
     var EQp = 4 - control; // convert control number to parameter number in mixxx
     var FXp = control; // control number matches effect param order
 
     // default behavior is to control EQ
     // when shifted, change parameters of focused effect
     if (deck.shiftKey && focusedEffect) {
-        parameterSoftTakeOver(
-            "[EffectRack1_EffectUnit" + decknum + "_Effect" + focusedEffect +"]", "parameter" + FXp, value
-        );
+        parameterSoftTakeOver(focusedEffect.group, "parameter" + FXp, value);
     } else {
         parameterSoftTakeOver("[EqualizerRack1_[Channel" + decknum + "]_Effect1]", "parameter" + EQp, value);
     }
@@ -2022,14 +1948,12 @@ NumarkMixtrack3.EQKnob = function(channel, control, value, status, group) {
 NumarkMixtrack3.FilterKnob = function(channel, control, value, status, group) {
     var deck = NumarkMixtrack3.deckFromGroup("[Channel" + group.substring(26, 27) + "]");
     var decknum = deck.decknum;
-    var focusedEffect = deck.getFocusedEffect();
+    var focusedEffect = deck.effectUnit.getFocusedEffect();
 
     // default behavior is to control filter
     // when shifted, change parameters of focused effect
     if (deck.shiftKey && focusedEffect) {
-        parameterSoftTakeOver(
-            "[EffectRack1_EffectUnit" + decknum + "_Effect" + focusedEffect + "]", "parameter4", value
-        );
+        parameterSoftTakeOver(focusedEffect.group, "parameter4", value);
     } else {
         parameterSoftTakeOver("[QuickEffectRack1_[Channel" + decknum + "]]", "super1", value);
     }
